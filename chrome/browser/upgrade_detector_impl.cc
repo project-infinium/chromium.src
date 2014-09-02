@@ -93,17 +93,20 @@ int GetCheckForUpgradeEveryMs() {
 
 // Return true if the current build is one of the unstable channels.
 bool IsUnstableChannel() {
+  // TODO(mad): Investigate whether we still need to be on the file thread for
+  // this. On Windows, the file thread used to be required for registry access
+  // but no anymore. But other platform may still need the file thread.
+  // crbug.com/366647.
   DCHECK(BrowserThread::CurrentlyOn(BrowserThread::FILE));
   chrome::VersionInfo::Channel channel = chrome::VersionInfo::GetChannel();
   return channel == chrome::VersionInfo::CHANNEL_DEV ||
          channel == chrome::VersionInfo::CHANNEL_CANARY;
 }
 
-// This task identifies whether we are running an unstable version. And then
-// it unconditionally calls back the provided task.
+// This task identifies whether we are running an unstable version. And then it
+// unconditionally calls back the provided task.
 void CheckForUnstableChannel(const base::Closure& callback_task,
                              bool* is_unstable_channel) {
-  DCHECK(BrowserThread::CurrentlyOn(BrowserThread::FILE));
   *is_unstable_channel = IsUnstableChannel();
   BrowserThread::PostTask(BrowserThread::UI, FROM_HERE, callback_task);
 }
@@ -123,10 +126,10 @@ bool IsSystemInstall() {
   return !InstallUtil::IsPerUserInstall(exe_path.value().c_str());
 }
 
-// This task checks the update policy and calls back the task only if the
-// system is not enrolled in a domain (i.e., not in an enterprise environment).
-// It also identifies if autoupdate is enabled and whether we are running an
-// unstable channel. |is_auto_update_enabled| can be NULL.
+// Sets |is_unstable_channel| to true if the current chrome is on the dev or
+// canary channels. Sets |is_auto_update_enabled| to true if Google Update will
+// update the current chrome. Unconditionally posts |callback_task| to the UI
+// thread to continue processing.
 void DetectUpdatability(const base::Closure& callback_task,
                         bool* is_unstable_channel,
                         bool* is_auto_update_enabled) {
@@ -139,9 +142,8 @@ void DetectUpdatability(const base::Closure& callback_task,
     *is_auto_update_enabled =
         GoogleUpdateSettings::AreAutoupdatesEnabled(app_guid);
   }
-  // Don't show the update bubbles to entreprise users (i.e., on a domain).
-  if (!base::win::IsEnrolledToDomain())
-    CheckForUnstableChannel(callback_task, is_unstable_channel);
+  *is_unstable_channel = IsUnstableChannel();
+  BrowserThread::PostTask(BrowserThread::UI, FROM_HERE, callback_task);
 }
 #endif  // defined(OS_WIN)
 
@@ -360,6 +362,12 @@ bool UpgradeDetectorImpl::DetectOutdatedInstall() {
     std::string brand;
     if (google_util::GetBrand(&brand) && !google_util::IsOrganic(brand))
       return false;
+
+#if defined(OS_WIN)
+    // Don't show the update bubbles to entreprise users (i.e., on a domain).
+    if (base::win::IsEnrolledToDomain())
+      return false;
+#endif
   }
 
   base::Time network_time;
